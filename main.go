@@ -114,7 +114,9 @@ func handleClient(conn net.Conn, proxy string, spnegoCli *SPNEGOClient, debug bo
 			req.WriteProxy(proxyConn)
 		}
 		if req.Method == "CONNECT" {
+			var wg sync.WaitGroup
 			forward := func(from, to net.Conn) {
+				defer wg.Done()
 				defer to.(*net.TCPConn).CloseWrite()
 				if debug {
 					fromAddr, toAddr := from.RemoteAddr(), to.RemoteAddr()
@@ -123,8 +125,10 @@ func handleClient(conn net.Conn, proxy string, spnegoCli *SPNEGOClient, debug bo
 				}
 				io.Copy(to, from)
 			}
+			wg.Add(2)
 			go forward(conn, proxyConn)
 			go forward(proxyConn, conn)
+			wg.Wait()
 			return
 		}
 		resp, err := http.ReadResponse(respReader, req)
