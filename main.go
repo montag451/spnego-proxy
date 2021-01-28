@@ -20,6 +20,8 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
+var logger = log.New(os.Stderr, "", log.LstdFlags)
+
 func getPassword(passwordFile string) (string, error) {
 	var password []byte
 	if passwordFile == "" {
@@ -73,108 +75,69 @@ func (c *SPNEGOClient) GetToken() (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
-func handleClientDebug(conn net.Conn, proxy string, spnegoCli *SPNEGOClient) {
+func handleClient(conn net.Conn, proxy string, spnegoCli *SPNEGOClient, debug bool) {
 	defer conn.Close()
-	defer log.Printf("stop processing request for client: %v", conn.RemoteAddr())
-	log.Printf("new client: %v", conn.RemoteAddr())
+	if debug {
+		defer logger.Printf("stop processing request for client: %v", conn.RemoteAddr())
+		logger.Printf("new client: %v", conn.RemoteAddr())
+	}
 	proxyConn, err := net.Dial("tcp", proxy)
 	if err != nil {
-		log.Printf("failed to connect to proxy: %v", err)
-		return
-	}
-	defer proxyConn.Close()
-	reqReader := bufio.NewReader(io.TeeReader(conn, os.Stdout))
-	respReader := bufio.NewReader(io.TeeReader(proxyConn, os.Stdout))
-	for {
-		token, err := spnegoCli.GetToken()
-		if err != nil {
-			log.Printf("failed to get SPNEGO token: %v", err)
-			return
-		}
-		authHeader := "Negotiate " + token
-		req, err := http.ReadRequest(reqReader)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				log.Printf("failed to read request: %v", err)
-			}
-			return
-		}
-		req.Header.Set("Proxy-Authorization", authHeader)
-		req.WriteProxy(io.MultiWriter(proxyConn, os.Stdout))
-		log.Printf("request method: %s", req.Method)
-		if req.Method == "CONNECT" {
-			var wg sync.WaitGroup
-			wg.Add(2)
-			forward := func(from, to net.Conn) {
-				defer wg.Done()
-				defer to.(*net.TCPConn).CloseWrite()
-				log.Printf("forward start %v -> %v", from.RemoteAddr(), to.RemoteAddr())
-				io.Copy(io.MultiWriter(to, os.Stdout), from)
-				log.Printf("forward done %v -> %v", from.RemoteAddr(), to.RemoteAddr())
-			}
-			go forward(conn, proxyConn)
-			go forward(proxyConn, conn)
-			wg.Wait()
-			return
-		}
-		resp, err := http.ReadResponse(respReader, req)
-		if err != nil {
-			log.Printf("failed to read response: %v", err)
-			return
-		}
-		if err := resp.Write(io.MultiWriter(conn, os.Stdout)); err != nil {
-			log.Printf("failed to write response: %v", err)
-			return
-		}
-	}
-}
-
-func handleClient(conn net.Conn, proxy string, spnegoCli *SPNEGOClient) {
-	defer conn.Close()
-	proxyConn, err := net.Dial("tcp", proxy)
-	if err != nil {
-		log.Printf("failed to connect to proxy: %v", err)
+		logger.Printf("failed to connect to proxy: %v", err)
 		return
 	}
 	defer proxyConn.Close()
 	reqReader := bufio.NewReader(conn)
 	respReader := bufio.NewReader(proxyConn)
+	if debug {
+		reqReader = bufio.NewReader(io.TeeReader(conn, os.Stdout))
+		respReader = bufio.NewReader(io.TeeReader(proxyConn, os.Stdout))
+	}
 	for {
 		token, err := spnegoCli.GetToken()
 		if err != nil {
-			log.Printf("failed to get SPNEGO token: %v", err)
+			logger.Printf("failed to get SPNEGO token: %v", err)
 			return
 		}
 		authHeader := "Negotiate " + token
 		req, err := http.ReadRequest(reqReader)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				log.Printf("failed to read request: %v", err)
+				logger.Printf("failed to read request: %v", err)
 			}
 			return
 		}
 		req.Header.Set("Proxy-Authorization", authHeader)
-		req.WriteProxy(proxyConn)
+		if debug {
+			req.WriteProxy(io.MultiWriter(proxyConn, os.Stdout))
+		} else {
+			req.WriteProxy(proxyConn)
+		}
 		if req.Method == "CONNECT" {
-			var wg sync.WaitGroup
-			wg.Add(2)
 			forward := func(from, to net.Conn) {
-				defer wg.Done()
 				defer to.(*net.TCPConn).CloseWrite()
+				if debug {
+					fromAddr, toAddr := from.RemoteAddr(), to.RemoteAddr()
+					logger.Printf("forward start %v -> %v", fromAddr, toAddr)
+					defer logger.Printf("forward done %v -> %v", fromAddr, toAddr)
+				}
 				io.Copy(to, from)
 			}
 			go forward(conn, proxyConn)
 			go forward(proxyConn, conn)
-			wg.Wait()
 			return
 		}
 		resp, err := http.ReadResponse(respReader, req)
 		if err != nil {
-			log.Printf("failed to read response: %v", err)
+			logger.Printf("failed to read response: %v", err)
 			return
 		}
-		if err := resp.Write(conn); err != nil {
-			log.Printf("failed to write response: %v", err)
+		var respWriter io.Writer = conn
+		if debug {
+			respWriter = io.MultiWriter(conn, os.Stdout)
+		}
+		if err := resp.Write(respWriter); err != nil {
+			logger.Printf("failed to write response: %v", err)
 			return
 		}
 	}
@@ -197,38 +160,40 @@ func main() {
 	if *spn == "" {
 		host, _, err := net.SplitHostPort(*proxy)
 		if err != nil {
-			log.Panic(err)
+			logger.Panic(err)
 		}
 		*spn = "HTTP/" + host
-		log.Println("Inferred service principal name:", *spn)
-		log.Println("If it's not correct use the -spn flag")
+		logger.Println("inferred service principal name:", *spn)
+		logger.Println("if it's not correct use the -spn flag")
 	}
 	cfg, err := config.Load(*cfgFile)
 	if err != nil {
-		log.Panic(err)
+		logger.Panic(err)
 	}
 	passwd, err := getPassword(*passwordFile)
 	if err != nil {
-		log.Panic(err)
+		logger.Panic(err)
 	}
-	cli := client.NewWithPassword(*user, *realm, passwd, cfg, client.DisablePAFXFAST(true))
+	opts := []func(*client.Settings){
+		client.DisablePAFXFAST(true),
+	}
+	if *debug {
+		opts = append(opts, client.Logger(logger))
+	}
+	cli := client.NewWithPassword(*user, *realm, passwd, cfg, opts...)
 	spnegoCli := &SPNEGOClient{
 		Client: spnego.SPNEGOClient(cli, *spn),
 	}
 	l, err := net.Listen("tcp", *addr)
 	if err != nil {
-		log.Panic(err)
+		logger.Panic(err)
 	}
 	defer l.Close()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.Panic(err)
+			logger.Panic(err)
 		}
-		if *debug {
-			go handleClientDebug(conn, *proxy, spnegoCli)
-		} else {
-			go handleClient(conn, *proxy, spnegoCli)
-		}
+		go handleClient(conn, *proxy, spnegoCli, *debug)
 	}
 }
