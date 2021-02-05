@@ -88,63 +88,43 @@ func handleClient(conn net.Conn, proxy string, spnegoCli *SPNEGOClient, debug bo
 	}
 	defer proxyConn.Close()
 	reqReader := bufio.NewReader(conn)
-	respReader := bufio.NewReader(proxyConn)
 	if debug {
 		reqReader = bufio.NewReader(io.TeeReader(conn, os.Stdout))
-		respReader = bufio.NewReader(io.TeeReader(proxyConn, os.Stdout))
 	}
-	for {
-		token, err := spnegoCli.GetToken()
-		if err != nil {
-			logger.Printf("failed to get SPNEGO token: %v", err)
-			return
-		}
-		authHeader := "Negotiate " + token
-		req, err := http.ReadRequest(reqReader)
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				logger.Printf("failed to read request: %v", err)
-			}
-			return
-		}
-		req.Header.Set("Proxy-Authorization", authHeader)
-		if debug {
-			req.WriteProxy(io.MultiWriter(proxyConn, os.Stdout))
-		} else {
-			req.WriteProxy(proxyConn)
-		}
-		if req.Method == "CONNECT" {
-			var wg sync.WaitGroup
-			forward := func(from, to net.Conn) {
-				defer wg.Done()
-				defer to.(*net.TCPConn).CloseWrite()
-				if debug {
-					fromAddr, toAddr := from.RemoteAddr(), to.RemoteAddr()
-					logger.Printf("forward start %v -> %v", fromAddr, toAddr)
-					defer logger.Printf("forward done %v -> %v", fromAddr, toAddr)
-				}
-				io.Copy(to, from)
-			}
-			wg.Add(2)
-			go forward(conn, proxyConn)
-			go forward(proxyConn, conn)
-			wg.Wait()
-			return
-		}
-		resp, err := http.ReadResponse(respReader, req)
-		if err != nil {
-			logger.Printf("failed to read response: %v", err)
-			return
-		}
-		var respWriter io.Writer = conn
-		if debug {
-			respWriter = io.MultiWriter(conn, os.Stdout)
-		}
-		if err := resp.Write(respWriter); err != nil {
-			logger.Printf("failed to write response: %v", err)
-			return
-		}
+	token, err := spnegoCli.GetToken()
+	if err != nil {
+		logger.Printf("failed to get SPNEGO token: %v", err)
+		return
 	}
+	authHeader := "Negotiate " + token
+	req, err := http.ReadRequest(reqReader)
+	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			logger.Printf("failed to read request: %v", err)
+		}
+		return
+	}
+	req.Header.Set("Proxy-Authorization", authHeader)
+	if debug {
+		req.WriteProxy(io.MultiWriter(proxyConn, os.Stdout))
+	} else {
+		req.WriteProxy(proxyConn)
+	}
+	var wg sync.WaitGroup
+	forward := func(from, to net.Conn) {
+		defer wg.Done()
+		defer to.(*net.TCPConn).CloseWrite()
+		if debug {
+			fromAddr, toAddr := from.RemoteAddr(), to.RemoteAddr()
+			logger.Printf("forward start %v -> %v", fromAddr, toAddr)
+			defer logger.Printf("forward done %v -> %v", fromAddr, toAddr)
+		}
+		io.Copy(to, from)
+	}
+	wg.Add(2)
+	go forward(conn, proxyConn)
+	go forward(proxyConn, conn)
+	wg.Wait()
 }
 
 func main() {
