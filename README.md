@@ -1,9 +1,9 @@
 # Description #
 
 Say that you work for a company that limits internet access through a
-proxy which requires SPNEGO authentication, if you want to use an
+proxy that requires SPNEGO authentication, if you want to use an
 application that does not support this authentication mechanism, then
-you are out of luck. `spnego-proxy` enables these applications to
+you are out of luck. `spnego-proxy` enables those applications to
 access internet by handling the authentication on behalf of the
 client. It sits between the application and the real proxy and acts as
 a normal HTTP proxy. It forwards requests made by the client to the
@@ -19,10 +19,10 @@ your machine (preferably in a location contained in your PATH) and you
 are done. If you feel adventurous or you don't like using binaries not
 compiled by you, you can compile the binary from sources. To do so,
 you need to install the [Go toolchain](https://golang.org/dl/). Once
-the go toolchain is installed on your machine, execute `go get -u
-github.com/montag451/spnego-proxy`. The binary will be installed in
-the `bin` directory of your `GOPATH` (use `go env GOPATH` to find out
-the value of `GOPATH` on your machine)
+the go toolchain is installed on your machine, execute `go install
+github.com/montag451/spnego-proxy@latest`. The binary will be
+installed in the `bin` directory of your `GOPATH` (use `go env GOPATH`
+to find out the value of `GOPATH` on your machine)
 
 # Usage #
 
